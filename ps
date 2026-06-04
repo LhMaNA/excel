@@ -3,8 +3,9 @@ import pandas as pd
 import zipfile
 import io
 import csv
+import unicodedata
+import re
 
-# ==== A ADAPTER ====
 FOLDER_ID = "ls0G0CHQ"
 
 DOSSIERS = {
@@ -15,10 +16,42 @@ DOSSIERS = {
         "Contrat_cb_LBP"    : (8,  11),
     },
     "/EZY/": {
-        "Contrats_cb_EZY"   : (18, 20),
+        "Contrats_cb_EZY"   : (0,  2),
     },
 }
-# ===================
+
+
+def clean_col_name(name):
+    # 1. Strip espaces
+    name = name.strip()
+    # 2. Minuscules
+    name = name.lower()
+    # 3. Supprimer les accents
+    name = unicodedata.normalize("NFD", name)
+    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
+    # 4. Remplacer espaces et caracteres speciaux par underscore
+    name = re.sub(r"[^a-z0-9]+", "_", name)
+    # 5. Supprimer underscores en debut et fin
+    name = name.strip("_")
+    # 6. Si vide apres nettoyage
+    if name == "":
+        name = "col"
+    return name
+
+
+def make_unique_headers(header):
+    seen = {}
+    result = []
+    for col in header:
+        col = clean_col_name(col)
+        if col in seen:
+            seen[col] += 1
+            col = col + "_" + str(seen[col])
+        else:
+            seen[col] = 0
+        result.append(col)
+    return result
+
 
 folder    = dataiku.Folder(FOLDER_ID)
 all_files = folder.list_paths_in_partition()
@@ -43,8 +76,28 @@ for source_path, slice_config in DOSSIERS.items():
             rows   = list(reader)
 
     for dataset_name, (start, end) in slice_config.items():
-        header = rows[start]
-        data   = rows[start + 1 : end + 1]
-        df     = pd.DataFrame(data, columns=header)
-        df.columns = [c.strip() for c in df.columns]
+
+        if start < len(rows) and rows[start]:
+            header = make_unique_headers(rows[start])
+        else:
+            header = ["col_0"]
+
+        data = []
+        for i in range(start + 1, end + 1):
+            if i < len(rows) and rows[i]:
+                data.append([c.strip() for c in rows[i]])
+
+        if not data:
+            data = [[""] * len(header)]
+
+        n_cols = len(header)
+        data_clean = []
+        for row in data:
+            if len(row) < n_cols:
+                row = row + [""] * (n_cols - len(row))
+            else:
+                row = row[:n_cols]
+            data_clean.append(row)
+
+        df = pd.DataFrame(data_clean, columns=header)
         dataiku.Dataset(dataset_name).write_with_schema(df)

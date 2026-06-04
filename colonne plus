@@ -1,0 +1,18 @@
+import dataiku
+import pandas as pd
+
+# Lire les deux datasets
+df1 = dataiku.Dataset("Automates_cb_OPT_").get_dataframe()
+df2 = dataiku.Dataset("Automates_cb_LBP").get_dataframe()
+
+# Addition de deux colonnes de la meme table
+df1["somme_col"] = df1["col_a"] + df1["col_b"]
+
+# Addition de deux lignes de la meme table (par index)
+somme_lignes = df1.iloc[0] + df1.iloc[1]
+
+# Addition d une colonne de df1 avec une colonne de df2
+df1["somme_tables"] = df1["col_a"] + df2["col_a"]
+
+# Ecrire le resultat
+dataiku.Dataset("mon_dataset_sortie").write_with_schema(df1)

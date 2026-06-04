@@ -22,18 +22,12 @@ DOSSIERS = {
 
 
 def clean_col_name(name):
-    # 1. Strip espaces
     name = name.strip()
-    # 2. Minuscules
     name = name.lower()
-    # 3. Supprimer les accents
     name = unicodedata.normalize("NFD", name)
     name = "".join(c for c in name if unicodedata.category(c) != "Mn")
-    # 4. Remplacer espaces et caracteres speciaux par underscore
     name = re.sub(r"[^a-z0-9]+", "_", name)
-    # 5. Supprimer underscores en debut et fin
     name = name.strip("_")
-    # 6. Si vide apres nettoyage
     if name == "":
         name = "col"
     return name
@@ -82,8 +76,9 @@ for source_path, slice_config in DOSSIERS.items():
         else:
             header = ["col_0"]
 
+        # end + 2 pour inclure la derniere ligne de donnees
         data = []
-        for i in range(start + 1, end + 1):
+        for i in range(start + 1, end + 2):
             if i < len(rows) and rows[i]:
                 data.append([c.strip() for c in rows[i]])
 

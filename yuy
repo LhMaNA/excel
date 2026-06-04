@@ -1,0 +1,48 @@
+import dataiku
+import pandas as pd
+import zipfile
+import io
+import csv
+
+FOLDER_ID = "ls0G0CHQ"
+
+DOSSIERS = {
+    "/LBP/": {
+        "Automates_cb_OPT_" : (0,  1),
+        "Automates_cb_LBP"  : (3,  4),
+        "Contrats_cb_OPT"   : (5,  7),
+        "Contrat_cb_LBP"    : (8,  11),
+    },
+    "/EZY/": {
+        "Contrats_cb_EZY"   : (0,  2),
+    },
+}
+
+folder    = dataiku.Folder(FOLDER_ID)
+all_files = folder.list_paths_in_partition()
+
+for source_path, slice_config in DOSSIERS.items():
+
+    zip_files = [f for f in all_files if f.startswith(source_path) and f.endswith(".zip")]
+
+    if not zip_files:
+        continue
+
+    latest = max(zip_files, key=lambda x: folder.get_path_details(x)["lastModified"])
+
+    with folder.get_download_stream(latest) as s:
+        zip_bytes = s.read()
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        csv_name = [n for n in zf.namelist() if n.endswith(".csv")][0]
+        with zf.open(csv_name) as f:
+            text   = io.TextIOWrapper(f, encoding="utf-8", errors="ignore")
+            reader = csv.reader(text, delimiter=";")
+            rows   = list(reader)
+
+    for dataset_name, (start, end) in slice_config.items():
+        header = rows[start]
+        data   = rows[start + 1 : end + 1]
+        df     = pd.DataFrame(data, columns=header)
+        df.columns = [c.strip() for c in df.columns]
+        dataiku.Dataset(dataset_name).write_with_schema(df)

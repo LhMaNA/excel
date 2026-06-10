@@ -1,122 +1,103 @@
 """
-Recherche floue d'un UETR dans une table de virements
-------------------------------------------------------
-Contexte : un UETR (Unique End-to-End Transaction Reference) est un UUID
-de 36 caractères (format xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
-Si l'UETR a été intégré de façon non standard (sans tirets, en minuscules,
-en majuscules, avec espaces, tronqué, etc.), on cherche quand même la
-meilleure correspondance.
-
-Usage en Dataiku : coller dans un Python recipe, adapter input_df.
+Recherche floue d'un identifiant de virement (roue) dans une table de virements
 """
 
 import pandas as pd
 import re
 from difflib import SequenceMatcher
+from datetime import timedelta
 
 # ─────────────────────────────────────────────
-# 1.  PARAMÈTRES
+# 1.  PARAMÈTRES  ← seuls endroits à modifier
 # ─────────────────────────────────────────────
 
-UETR_CIBLE = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"   # ← remplacer par la vraie valeur
-DATE_VIREMENT = "2025-10-21"                            # ← date du virement ciblé
-COLONNE_UETR = "uetr"                                   # ← nom de la colonne dans ta table
-COLONNE_DATE = "date_operation"                         # ← colonne date (optionnel, peut être None)
-TOP_N = 10                                              # ← nombre de résultats à afficher
+ROUE_CIBLE     = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # ← coller la roue ici
+DATE_VIREMENT  = "2025-10-21"                             # ← date du virement
+COLONNE_ROUE   = "MA_COLONNE_ROUE"                        # ← nom de ta colonne identifiant
+COLONNE_DATE   = "MA_COLONNE_DATE"                        # ← nom de ta colonne timestamp
+PLAGE_JOURS    = 7                                        # ← ±7 jours autour de la date
+TOP_N          = 10                                       # ← nombre de résultats à afficher
 
 # ─────────────────────────────────────────────
-# 2.  CHARGEMENT DU DATAFRAME
-#     En Dataiku, remplacer ces 3 lignes par :
-#     import dataiku
-#     dataset = dataiku.Dataset("nom_du_dataset")
-#     df = dataset.get_dataframe()
+# 2.  CHARGEMENT  (adapter pour Dataiku)
 # ─────────────────────────────────────────────
 
-# Exemple local (supprimer si Dataiku)
-df = pd.read_csv("virements.csv")
+import dataiku
+dataset = dataiku.Dataset("NOM_DE_TON_DATASET")   # ← nom du dataset Dataiku
+df = dataset.get_dataframe()
 
 # ─────────────────────────────────────────────
-# 3.  FONCTIONS DE NORMALISATION
+# 3.  CAST TIMESTAMP → DATE + FILTRE ±7 JOURS
 # ─────────────────────────────────────────────
 
-def normaliser(s: str) -> str:
+df[COLONNE_DATE] = pd.to_datetime(df[COLONNE_DATE], errors="coerce").dt.date
+
+date_cible = pd.to_datetime(DATE_VIREMENT).date()
+date_min   = date_cible - timedelta(days=PLAGE_JOURS)
+date_max   = date_cible + timedelta(days=PLAGE_JOURS)
+
+df_filtre = df[
+    (df[COLONNE_DATE] >= date_min) &
+    (df[COLONNE_DATE] <= date_max)
+].copy()
+
+print(f"Plage de recherche : {date_min}  →  {date_max}")
+print(f"Lignes dans la plage : {len(df_filtre)}")
+
+if df_filtre.empty:
+    print("⚠  Aucune ligne dans cette plage → recherche sur toute la table.")
+    df_filtre = df.copy()
+
+# ─────────────────────────────────────────────
+# 4.  FONCTIONS DE MATCHING FLOU
+# ─────────────────────────────────────────────
+
+def normaliser(s):
     """Supprime tirets, espaces, met en minuscules."""
     if pd.isna(s):
         return ""
     return re.sub(r"[-\s]", "", str(s)).lower()
 
-def score_similarite(a: str, b: str) -> float:
-    """Ratio de similarité entre deux chaînes normalisées (0 à 1)."""
+def score_similarite(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-def compter_chars_communs(a: str, b: str) -> int:
-    """Nombre de caractères en commun (blocs contigus)."""
-    matcher = SequenceMatcher(None, a, b)
-    return sum(bloc.size for bloc in matcher.get_matching_blocks())
-
-# ─────────────────────────────────────────────
-# 4.  FILTRAGE PAR DATE (optionnel mais recommandé)
-#     Réduit le périmètre de recherche avant le scoring
-# ─────────────────────────────────────────────
-
-if COLONNE_DATE and COLONNE_DATE in df.columns:
-    df[COLONNE_DATE] = pd.to_datetime(df[COLONNE_DATE], errors="coerce")
-    date_cible = pd.to_datetime(DATE_VIREMENT)
-    df_filtre = df[df[COLONNE_DATE].dt.date == date_cible.date()].copy()
-    print(f"Lignes avec la date {DATE_VIREMENT} : {len(df_filtre)}")
-    if df_filtre.empty:
-        print("⚠  Aucune ligne à cette date exacte → on cherche sur toute la table.")
-        df_filtre = df.copy()
-else:
-    df_filtre = df.copy()
-    print("Pas de filtre date → recherche sur toute la table.")
+def chars_communs(a, b):
+    m = SequenceMatcher(None, a, b)
+    return sum(bloc.size for bloc in m.get_matching_blocks())
 
 # ─────────────────────────────────────────────
 # 5.  SCORING
 # ─────────────────────────────────────────────
 
-uetr_norm = normaliser(UETR_CIBLE)
+roue_norm = normaliser(ROUE_CIBLE)
 
-df_filtre["_uetr_norm"] = df_filtre[COLONNE_UETR].apply(normaliser)
-df_filtre["_score_ratio"] = df_filtre["_uetr_norm"].apply(
-    lambda x: score_similarite(uetr_norm, x)
-)
-df_filtre["_chars_communs"] = df_filtre["_uetr_norm"].apply(
-    lambda x: compter_chars_communs(uetr_norm, x)
-)
+df_filtre["_roue_norm"]      = df_filtre[COLONNE_ROUE].apply(normaliser)
+df_filtre["_score"]          = df_filtre["_roue_norm"].apply(lambda x: score_similarite(roue_norm, x))
+df_filtre["_chars_communs"]  = df_filtre["_roue_norm"].apply(lambda x: chars_communs(roue_norm, x))
 
 # ─────────────────────────────────────────────
-# 6.  DÉTECTION D'UN MATCH EXACT (UETR sans tirets)
+# 6.  MATCH EXACT (après normalisation)
 # ─────────────────────────────────────────────
 
-matches_exacts = df_filtre[df_filtre["_uetr_norm"] == uetr_norm]
-if not matches_exacts.empty:
+exacts = df_filtre[df_filtre["_roue_norm"] == roue_norm]
+if not exacts.empty:
     print("\n✅  MATCH EXACT TROUVÉ (après normalisation) :")
-    print(matches_exacts.drop(columns=["_uetr_norm"]))
+    print(exacts.drop(columns=["_roue_norm"]).to_string())
 else:
     print("\n⚠  Pas de match exact → voici les candidats les plus proches :\n")
 
 # ─────────────────────────────────────────────
-# 7.  TOP N RÉSULTATS PAR SCORE
+# 7.  TOP N PAR SCORE
 # ─────────────────────────────────────────────
 
 top = (
     df_filtre
-    .sort_values(["_score_ratio", "_chars_communs"], ascending=False)
+    .sort_values(["_score", "_chars_communs"], ascending=False)
     .head(TOP_N)
-    .drop(columns=["_uetr_norm"])
+    .drop(columns=["_roue_norm"])
     .reset_index(drop=True)
 )
 
 pd.set_option("display.max_columns", None)
 pd.set_option("display.width", 200)
-print(top[[COLONNE_UETR, "_score_ratio", "_chars_communs"] +
-          ([COLONNE_DATE] if COLONNE_DATE and COLONNE_DATE in df.columns else [])])
-
-# ─────────────────────────────────────────────
-# 8.  EXPORT (optionnel)
-#     En Dataiku : output_dataset.write_with_schema(top)
-# ─────────────────────────────────────────────
-
-top.to_csv("resultats_uetr_flou.csv", index=False)
-print("\n→ Résultats exportés dans resultats_uetr_flou.csv")
+print(top[[COLONNE_ROUE, COLONNE_DATE, "_score", "_chars_communs"]])

@@ -147,7 +147,6 @@ result = joined.select(
     retrait_agg["montant_total"].alias("montant_total")
 )
 
-# Force un schema propre, sans metadonnees residuelles
 result = result.select(
     F.col("mois_annee").cast("string"),
     F.col("num_automate").cast("string"),
@@ -159,7 +158,18 @@ result = result.select(
 )
 
 # ------------------------------------------------------------
-# SORTIE DU FLOW — ecriture avec recreation forcee du schema
+# SORTIE DU FLOW
 # ------------------------------------------------------------
 output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE")
-dkuspark.write_with_schema(output_dataset, result, dropAndCreate=True)
+
+# On force la recreation du schema en amont, avant l'ecriture
+output_dataset.write_schema_from_dataframe(result, dropAndCreate=True)
+
+dkuspark.write_with_schema(output_dataset, result)
+
+
+# ------------------------------------------------------------
+# SORTIE DU FLOW — version la plus compatible, sans options
+# ------------------------------------------------------------
+output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE")
+dkuspark.write_with_schema(output_dataset, result)

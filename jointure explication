@@ -38,7 +38,7 @@ spark = SparkSession.builder \
     .getOrCreate()
 
 # ------------------------------------------------------------
-# UDF — generation de sequence
+# UDF — generation de sequence (logique Python pure, OK ici)
 # ------------------------------------------------------------
 def make_sequence(start, end):
     if start is None or end is None:
@@ -100,9 +100,14 @@ bin_filtered = bin_raw.filter(
 ).select(
     "bin6_min", "bin6_max", "bin8_min", "bin8_max",
     F.col("pi_cdbqatt").cast("string").alias("pi_cdbqatt")
-).filter(
-    F.col("bin6_min").isNotNull() & F.col("bin6_max").isNotNull() &
-    F.col("bin8_min").isNotNull() & F.col("bin8_max").isNotNull()
+)
+
+# Filtre nullite — chaque condition entre parentheses, jointes par &
+bin_filtered = bin_filtered.filter(
+    (F.col("bin6_min").isNotNull()) &
+    (F.col("bin6_max").isNotNull()) &
+    (F.col("bin8_min").isNotNull()) &
+    (F.col("bin8_max").isNotNull())
 )
 
 # ------------------------------------------------------------
@@ -128,7 +133,7 @@ bin_exploded = bin_exploded.repartition(400, "bin_val_str", "bin_type_bin")
 bin_exploded.cache()
 
 # ------------------------------------------------------------
-# JOINTURE
+# JOINTURE — condition entre parentheses, jointe par &
 # ------------------------------------------------------------
 joined = retrait_agg.join(
     bin_exploded,
@@ -159,17 +164,6 @@ result = result.select(
 
 # ------------------------------------------------------------
 # SORTIE DU FLOW
-# ------------------------------------------------------------
-output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE")
-
-# On force la recreation du schema en amont, avant l'ecriture
-output_dataset.write_schema_from_dataframe(result, dropAndCreate=True)
-
-dkuspark.write_with_schema(output_dataset, result)
-
-
-# ------------------------------------------------------------
-# SORTIE DU FLOW — version la plus compatible, sans options
 # ------------------------------------------------------------
 output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE")
 dkuspark.write_with_schema(output_dataset, result)

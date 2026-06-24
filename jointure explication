@@ -1,12 +1,173 @@
-SELECT
-    MIN(CAST(SUBSTR(pi_trmax,1,6) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,6) AS BIGINT)) AS amplitude_min_bin6,
-    MAX(CAST(SUBSTR(pi_trmax,1,6) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,6) AS BIGINT)) AS amplitude_max_bin6,
-    AVG(CAST(SUBSTR(pi_trmax,1,6) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,6) AS BIGINT)) AS amplitude_moy_bin6,
+# ============================================================
+# NOTEBOOK PYSPARK — JOINTURE RETRAITS x BINs (TOUT LE PARC)
+# Periode : 2025 + 2026 — Banque d'attribution uniquement
+# Strategie : explosion des plages BIN en valeurs unitaires
+#             + jointure par egalite exacte (pas de BETWEEN)
+# ============================================================
 
-    MIN(CAST(SUBSTR(pi_trmax,1,8) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,8) AS BIGINT)) AS amplitude_min_bin8,
-    MAX(CAST(SUBSTR(pi_trmax,1,8) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,8) AS BIGINT)) AS amplitude_max_bin8,
-    AVG(CAST(SUBSTR(pi_trmax,1,8) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,8) AS BIGINT)) AS amplitude_moy_bin8
+import dataiku
+from dataiku import spark as dkuspark
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import LongType
+from pyspark import SparkConf
 
-FROM t_lbp_mon_bin8_h
-WHERE pi_daeffet < '2026-01-01'
-  AND pi_dafin   > '2025-12-31'
+# ------------------------------------------------------------
+# 0. CONFIGURATION SPARK
+# ------------------------------------------------------------
+config = SparkConf().setAll([
+    ('spark.sql.autoBroadcastJoinThreshold', '-1'),
+    ('spark.sql.adaptive.enabled', 'true'),
+    ('spark.sql.adaptive.broadcastExchangeEnabled', 'false'),
+    ('spark.sql.join.preferSortMergeJoin', 'true'),
+
+    ('spark.executor.instances', '40'),
+    ('spark.executor.cores', '4'),
+    ('spark.executor.memory', '8g'),
+    ('spark.executor.memoryOverhead', '4g'),
+    ('spark.driver.memory', '8g'),
+    ('spark.driver.memoryOverhead', '2g'),
+
+    ('spark.sql.shuffle.partitions', '800'),
+    ('spark.sql.adaptive.coalescePartitions.enabled', 'true'),
+    ('spark.sql.adaptive.coalescePartitions.minPartitionNum', '400'),
+    ('spark.sql.adaptive.advisoryPartitionSizeInBytes', '64MB'),
+    ('spark.sql.adaptive.skewJoin.enabled', 'true'),
+
+    ('spark.serializer', 'org.apache.spark.serializer.KryoSerializer'),
+    ('spark.sql.shuffle.compress', 'true'),
+])
+
+spark = SparkSession.builder \
+    .config(conf=config) \
+    .enableHiveSupport() \
+    .getOrCreate()
+
+print("Spark session demarree")
+
+# ------------------------------------------------------------
+# 1. CHARGEMENT DES TABLES DE BASE (pas les sorties SQL)
+# ------------------------------------------------------------
+# Remplacez "ds_..." par le nom exact de votre table brute de retraits
+retrait_raw = dkuspark.get_dataframe(spark, dataiku.Dataset("ds_..."))
+
+# Table brute des BINs
+bin_raw = dkuspark.get_dataframe(spark, dataiku.Dataset("t_lbp_mon_bin8_h"))
+
+# Filtre periode 2025 + 2026, tout le parc
+retrait_raw = retrait_raw.filter(F.col("annee").isin(2025, 2026))
+
+print(f"Retraits charges (2025+2026, tout le parc) : {retrait_raw.count():,} lignes")
+print(f"BINs charges : {bin_raw.count():,} lignes")
+
+# ------------------------------------------------------------
+# 2. PREPARATION TABLE RETRAITS — detection BIN6/BIN8
+#    (reprend exactement votre logique SQL, en PySpark)
+# ------------------------------------------------------------
+retrait_df = retrait_raw.withColumn(
+    "bin_clean",
+    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX",
+           F.substring(F.col("num_carte"), 1, 6))
+     .otherwise(F.substring(F.col("num_carte"), 1, 8))
+).withColumn(
+    "bin_type",
+    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX", F.lit(6))
+     .otherwise(F.lit(8))
+).withColumn(
+    "mois_annee", F.substring(F.col("date_operation"), 3, 6)
+)
+
+# Agregation (equivalent de votre GROUP BY)
+retrait_agg = retrait_df.groupBy(
+    "mois_annee", "num_automate", "bin_clean", "bin_type"
+).agg(
+    F.count("*").alias("nb_retraits"),
+    F.sum("montant_ope").alias("montant_total")
+)
+
+retrait_agg = retrait_agg.repartition(400, "bin_clean", "bin_type")
+retrait_agg.cache()
+print(f"Retraits agreges : {retrait_agg.count():,} lignes")
+
+# ------------------------------------------------------------
+# 3. PREPARATION TABLE BINs — cast + filtre date
+#    Uniquement banque d'attribution (pi_cdbqatt)
+# ------------------------------------------------------------
+bin_filtered = bin_raw.filter(
+    (F.col("pi_daeffet") < "2026-01-01") & (F.col("pi_dafin") > "2025-12-31")
+).withColumn(
+    "bin6_min", F.substring(F.col("pi_trmin"), 1, 6).cast(LongType())
+).withColumn(
+    "bin6_max", F.substring(F.col("pi_trmax"), 1, 6).cast(LongType())
+).withColumn(
+    "bin8_min", F.substring(F.col("pi_trmin"), 1, 8).cast(LongType())
+).withColumn(
+    "bin8_max", F.substring(F.col("pi_trmax"), 1, 8).cast(LongType())
+).select(
+    "bin6_min", "bin6_max", "bin8_min", "bin8_max",
+    "pi_cdbqatt"   # banque d'attribution uniquement
+).filter(
+    F.col("bin6_min").isNotNull() & F.col("bin6_max").isNotNull() &
+    F.col("bin8_min").isNotNull() & F.col("bin8_max").isNotNull()
+)
+
+print(f"BINs filtres : {bin_filtered.count():,} lignes")
+
+# ------------------------------------------------------------
+# 4. EXPLOSION DES PLAGES BIN6 EN VALEURS UNITAIRES
+# ------------------------------------------------------------
+bin6_exploded = bin_filtered.select(
+    F.explode(
+        F.sequence(F.col("bin6_min"), F.col("bin6_max"))
+    ).alias("bin_val"),
+    F.lit(6).alias("bin_type"),
+    "pi_cdbqatt"
+)
+
+# ------------------------------------------------------------
+# 5. EXPLOSION DES PLAGES BIN8 EN VALEURS UNITAIRES
+# ------------------------------------------------------------
+bin8_exploded = bin_filtered.select(
+    F.explode(
+        F.sequence(F.col("bin8_min"), F.col("bin8_max"))
+    ).alias("bin_val"),
+    F.lit(8).alias("bin_type"),
+    "pi_cdbqatt"
+)
+
+# Union des deux types
+bin_exploded = bin6_exploded.unionByName(bin8_exploded)
+bin_exploded = bin_exploded.withColumn(
+    "bin_val_str", F.col("bin_val").cast("string")
+)
+bin_exploded = bin_exploded.repartition(400, "bin_val_str", "bin_type")
+bin_exploded.cache()
+
+print(f"BINs explodes : {bin_exploded.count():,} lignes")
+
+# ------------------------------------------------------------
+# 6. JOINTURE PAR EGALITE EXACTE — plus de BETWEEN !
+# ------------------------------------------------------------
+result = retrait_agg.join(
+    bin_exploded,
+    (retrait_agg.bin_clean == bin_exploded.bin_val_str) &
+    (retrait_agg.bin_type  == bin_exploded.bin_type),
+    how="left"
+).select(
+    retrait_agg["mois_annee"],
+    retrait_agg["num_automate"],
+    retrait_agg["bin_clean"],
+    retrait_agg["bin_type"],
+    bin_exploded["pi_cdbqatt"].alias("banque_attribution"),
+    retrait_agg["nb_retraits"],
+    retrait_agg["montant_total"]
+)
+
+print(f"Resultat final : {result.count():,} lignes")
+
+# ------------------------------------------------------------
+# 7. ECRITURE DU RESULTAT
+# ------------------------------------------------------------
+dkuspark.write_with_schema(dataiku.Dataset("NOM_DATASET_SORTIE"), result)
+
+print("Termine — resultat ecrit dans le dataset de sortie")

@@ -2,7 +2,7 @@ import dataiku
 from dataiku import spark as dkuspark
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import LongType, ArrayType, IntegerType
+from pyspark.sql.types import LongType, ArrayType, IntegerType, StringType, DoubleType
 from pyspark.sql.functions import udf, col, explode
 from pyspark import SparkConf
 
@@ -14,20 +14,17 @@ config = SparkConf().setAll([
     ('spark.sql.adaptive.enabled', 'true'),
     ('spark.sql.adaptive.broadcastExchangeEnabled', 'false'),
     ('spark.sql.join.preferSortMergeJoin', 'true'),
-
     ('spark.executor.instances', '40'),
     ('spark.executor.cores', '4'),
     ('spark.executor.memory', '8g'),
     ('spark.executor.memoryOverhead', '4g'),
     ('spark.driver.memory', '8g'),
     ('spark.driver.memoryOverhead', '2g'),
-
     ('spark.sql.shuffle.partitions', '800'),
     ('spark.sql.adaptive.coalescePartitions.enabled', 'true'),
     ('spark.sql.adaptive.coalescePartitions.minPartitionNum', '400'),
     ('spark.sql.adaptive.advisoryPartitionSizeInBytes', '64MB'),
     ('spark.sql.adaptive.skewJoin.enabled', 'true'),
-
     ('spark.serializer', 'org.apache.spark.serializer.KryoSerializer'),
     ('spark.sql.shuffle.compress', 'true'),
 ])
@@ -38,10 +35,12 @@ spark = SparkSession.builder \
     .getOrCreate()
 
 # ------------------------------------------------------------
-# UDF — generation de sequence (logique Python pure, OK ici)
+# UDF — generation de sequence
 # ------------------------------------------------------------
 def make_sequence(start, end):
-    if start is None or end is None:
+    if start is None:
+        return []
+    if end is None:
         return []
     if end < start:
         return []
@@ -50,65 +49,69 @@ def make_sequence(start, end):
 sequence_udf = udf(make_sequence, ArrayType(LongType()))
 
 # ------------------------------------------------------------
-# ENTREES DU FLOW
+# ENTREES DU FLOW — A ADAPTER avec vos noms exacts
 # ------------------------------------------------------------
 retrait_raw = dkuspark.get_dataframe(spark, dataiku.Dataset("ds_..."))
 bin_raw     = dkuspark.get_dataframe(spark, dataiku.Dataset("t_lbp_mon_bin8_h"))
 
-retrait_raw = retrait_raw.filter(F.col("annee").isin(2025, 2026))
+retrait_raw = retrait_raw.filter(col("annee").isin([2025, 2026]))
 
 # ------------------------------------------------------------
 # PREPARATION TABLE RETRAITS
 # ------------------------------------------------------------
 retrait_df = retrait_raw.withColumn(
     "bin_clean",
-    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX",
-           F.substring(F.col("num_carte"), 1, 6))
-     .otherwise(F.substring(F.col("num_carte"), 1, 8))
-).withColumn(
+    F.when(F.substring(col("num_carte"), 7, 2) == "XX",
+           F.substring(col("num_carte"), 1, 6))
+     .otherwise(F.substring(col("num_carte"), 1, 8))
+)
+
+retrait_df = retrait_df.withColumn(
     "bin_type",
-    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX", F.lit(6))
+    F.when(F.substring(col("num_carte"), 7, 2) == "XX", F.lit(6))
      .otherwise(F.lit(8))
      .cast(IntegerType())
-).withColumn(
-    "mois_annee", F.substring(F.col("date_operation"), 3, 6)
+)
+
+retrait_df = retrait_df.withColumn(
+    "mois_annee", F.substring(col("date_operation"), 3, 6)
 )
 
 retrait_agg = retrait_df.groupBy(
     "mois_annee", "num_automate", "bin_clean", "bin_type"
 ).agg(
-    F.count(F.lit(1)).cast(LongType()).alias("nb_retraits"),
-    F.sum(F.col("montant_ope").cast("double")).alias("montant_total")
+    F.count(F.lit(1)).alias("nb_retraits"),
+    F.sum(col("montant_ope")).alias("montant_total")
 )
 
+retrait_agg = retrait_agg.withColumn("nb_retraits", col("nb_retraits").cast(LongType()))
+retrait_agg = retrait_agg.withColumn("montant_total", col("montant_total").cast(DoubleType()))
 retrait_agg = retrait_agg.repartition(400, "bin_clean", "bin_type")
 retrait_agg.cache()
 
 # ------------------------------------------------------------
 # PREPARATION TABLE BINs
 # ------------------------------------------------------------
-bin_filtered = bin_raw.filter(
-    (F.col("pi_daeffet") < "2026-01-01") & (F.col("pi_dafin") > "2025-12-31")
-).withColumn(
-    "bin6_min", F.substring(F.col("pi_trmin"), 1, 6).cast(LongType())
-).withColumn(
-    "bin6_max", F.substring(F.col("pi_trmax"), 1, 6).cast(LongType())
-).withColumn(
-    "bin8_min", F.substring(F.col("pi_trmin"), 1, 8).cast(LongType())
-).withColumn(
-    "bin8_max", F.substring(F.col("pi_trmax"), 1, 8).cast(LongType())
-).select(
+bin_base = bin_raw.filter(col("pi_daeffet") < "2026-01-01")
+bin_base = bin_base.filter(col("pi_dafin") > "2025-12-31")
+
+bin_base = bin_base.withColumn("bin6_min", F.substring(col("pi_trmin"), 1, 6).cast(LongType()))
+bin_base = bin_base.withColumn("bin6_max", F.substring(col("pi_trmax"), 1, 6).cast(LongType()))
+bin_base = bin_base.withColumn("bin8_min", F.substring(col("pi_trmin"), 1, 8).cast(LongType()))
+bin_base = bin_base.withColumn("bin8_max", F.substring(col("pi_trmax"), 1, 8).cast(LongType()))
+
+bin_base = bin_base.select(
     "bin6_min", "bin6_max", "bin8_min", "bin8_max",
-    F.col("pi_cdbqatt").cast("string").alias("pi_cdbqatt")
+    col("pi_cdbqatt").cast(StringType()).alias("pi_cdbqatt")
 )
 
-# Filtre nullite — chaque condition entre parentheses, jointes par &
-bin_filtered = bin_filtered.filter(
-    (F.col("bin6_min").isNotNull()) &
-    (F.col("bin6_max").isNotNull()) &
-    (F.col("bin8_min").isNotNull()) &
-    (F.col("bin8_max").isNotNull())
-)
+# Filtres nullite ecrits SEPAREMENT, un par un, pas de & sur une longue ligne
+bin_base = bin_base.filter(col("bin6_min").isNotNull())
+bin_base = bin_base.filter(col("bin6_max").isNotNull())
+bin_base = bin_base.filter(col("bin8_min").isNotNull())
+bin_base = bin_base.filter(col("bin8_max").isNotNull())
+
+bin_filtered = bin_base
 
 # ------------------------------------------------------------
 # EXPLOSION DES PLAGES BIN6 ET BIN8
@@ -116,31 +119,28 @@ bin_filtered = bin_filtered.filter(
 bin6_exploded = bin_filtered.select(
     explode(sequence_udf(col("bin6_min"), col("bin6_max"))).alias("bin_val"),
     F.lit(6).cast(IntegerType()).alias("bin_type_bin"),
-    "pi_cdbqatt"
+    col("pi_cdbqatt")
 )
 
 bin8_exploded = bin_filtered.select(
     explode(sequence_udf(col("bin8_min"), col("bin8_max"))).alias("bin_val"),
     F.lit(8).cast(IntegerType()).alias("bin_type_bin"),
-    "pi_cdbqatt"
+    col("pi_cdbqatt")
 )
 
 bin_exploded = bin6_exploded.unionByName(bin8_exploded)
-bin_exploded = bin_exploded.withColumn(
-    "bin_val_str", F.col("bin_val").cast("string")
-)
+bin_exploded = bin_exploded.withColumn("bin_val_str", col("bin_val").cast(StringType()))
 bin_exploded = bin_exploded.repartition(400, "bin_val_str", "bin_type_bin")
 bin_exploded.cache()
 
 # ------------------------------------------------------------
-# JOINTURE — condition entre parentheses, jointe par &
+# JOINTURE — condition de jointure construite en deux temps
 # ------------------------------------------------------------
-joined = retrait_agg.join(
-    bin_exploded,
-    (retrait_agg["bin_clean"] == bin_exploded["bin_val_str"]) &
-    (retrait_agg["bin_type"]  == bin_exploded["bin_type_bin"]),
-    how="left"
-)
+cond1 = retrait_agg["bin_clean"] == bin_exploded["bin_val_str"]
+cond2 = retrait_agg["bin_type"] == bin_exploded["bin_type_bin"]
+join_condition = cond1 & cond2
+
+joined = retrait_agg.join(bin_exploded, join_condition, "left")
 
 result = joined.select(
     retrait_agg["mois_annee"].alias("mois_annee"),
@@ -152,18 +152,8 @@ result = joined.select(
     retrait_agg["montant_total"].alias("montant_total")
 )
 
-result = result.select(
-    F.col("mois_annee").cast("string"),
-    F.col("num_automate").cast("string"),
-    F.col("bin_clean").cast("string"),
-    F.col("bin_type").cast("int"),
-    F.col("banque_attribution").cast("string"),
-    F.col("nb_retraits").cast("long"),
-    F.col("montant_total").cast("double")
-)
-
 # ------------------------------------------------------------
-# SORTIE DU FLOW
+# SORTIE DU FLOW — version la plus simple et compatible
 # ------------------------------------------------------------
 output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE")
 dkuspark.write_with_schema(output_dataset, result)

@@ -1,69 +1,12 @@
 SELECT
-    CAST(SUBSTR(pi_trmin, 1, 6) AS BIGINT) AS bin6_min,
-    CAST(SUBSTR(pi_trmax, 1, 6) AS BIGINT) AS bin6_max,
-    CAST(SUBSTR(pi_trmin, 1, 8) AS BIGINT) AS bin8_min,
-    CAST(SUBSTR(pi_trmax, 1, 8) AS BIGINT) AS bin8_max,
-    pi_cdbqatt                             AS banque_affectation,
-    pi_cdbqaff                             AS banque_attribution
+    MIN(CAST(SUBSTR(pi_trmax,1,6) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,6) AS BIGINT)) AS amplitude_min_bin6,
+    MAX(CAST(SUBSTR(pi_trmax,1,6) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,6) AS BIGINT)) AS amplitude_max_bin6,
+    AVG(CAST(SUBSTR(pi_trmax,1,6) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,6) AS BIGINT)) AS amplitude_moy_bin6,
+
+    MIN(CAST(SUBSTR(pi_trmax,1,8) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,8) AS BIGINT)) AS amplitude_min_bin8,
+    MAX(CAST(SUBSTR(pi_trmax,1,8) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,8) AS BIGINT)) AS amplitude_max_bin8,
+    AVG(CAST(SUBSTR(pi_trmax,1,8) AS BIGINT) - CAST(SUBSTR(pi_trmin,1,8) AS BIGINT)) AS amplitude_moy_bin8
+
 FROM t_lbp_mon_bin8_h
 WHERE pi_daeffet < '2026-01-01'
   AND pi_dafin   > '2025-12-31'
-
-Requete 2 — Table retraits avec CAST pre-calcule
-sqlSELECT
-    SUBSTR(date_operation, 3, 6)           AS mois_annee,
-    num_automate,
-    SUBSTR(num_carte, 1, 8)                AS bin_used,
-    CASE
-        WHEN SUBSTR(num_carte, 7, 2) = 'XX'
-        THEN SUBSTR(num_carte, 1, 6)
-        ELSE SUBSTR(num_carte, 1, 8)
-    END                                    AS bin_clean,
-    CAST(
-        CASE
-            WHEN SUBSTR(num_carte, 7, 2) = 'XX'
-            THEN SUBSTR(num_carte, 1, 6)
-            ELSE SUBSTR(num_carte, 1, 8)
-        END
-    AS BIGINT)                             AS bin_clean_int,
-    CASE
-        WHEN SUBSTR(num_carte, 7, 2) = 'XX'
-        THEN 6 ELSE 8
-    END                                    AS bin_type,
-    COUNT(*)                               AS nb_retraits,
-    SUM(montant_ope)                       AS montant_total
-FROM ds_...
-WHERE annee = 2026
-GROUP BY
-    SUBSTR(date_operation, 3, 6),
-    num_automate,
-    SUBSTR(num_carte, 1, 8),
-    CASE WHEN SUBSTR(num_carte, 7, 2) = 'XX' THEN SUBSTR(num_carte, 1, 6) ELSE SUBSTR(num_carte, 1, 8) END,
-    CASE WHEN SUBSTR(num_carte, 7, 2) = 'XX' THEN 6 ELSE 8 END
-
-Requete 3 — Jointure propre et rapide
-sqlSELECT
-    r.mois_annee,
-    r.num_automate,
-    r.bin_used,
-    b.banque_affectation,
-    b.banque_attribution,
-    r.nb_retraits,
-    r.montant_total
-FROM retrait_agg r
-LEFT JOIN bin_agg b
-    ON (
-        /* CAS BIN6 */
-        (
-            r.bin_type = 6
-            AND r.bin_clean_int
-                BETWEEN b.bin6_min AND b.bin6_max
-        )
-        OR
-        /* CAS BIN8 */
-        (
-            r.bin_type = 8
-            AND r.bin_clean_int
-                BETWEEN b.bin8_min AND b.bin8_max
-        )
-    )

@@ -2,7 +2,7 @@ import dataiku
 from dataiku import spark as dkuspark
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import LongType, ArrayType
+from pyspark.sql.types import LongType, ArrayType, IntegerType
 from pyspark.sql.functions import udf, col, explode
 from pyspark import SparkConf
 
@@ -68,6 +68,7 @@ retrait_df = retrait_raw.withColumn(
     "bin_type",
     F.when(F.substring(F.col("num_carte"), 7, 2) == "XX", F.lit(6))
      .otherwise(F.lit(8))
+     .cast(IntegerType())
 ).withColumn(
     "mois_annee", F.substring(F.col("date_operation"), 3, 6)
 )
@@ -108,13 +109,13 @@ bin_filtered = bin_raw.filter(
 # ------------------------------------------------------------
 bin6_exploded = bin_filtered.select(
     explode(sequence_udf(col("bin6_min"), col("bin6_max"))).alias("bin_val"),
-    F.lit(6).alias("bin_type"),
+    F.lit(6).cast(IntegerType()).alias("bin_type_bin"),
     "pi_cdbqatt"
 )
 
 bin8_exploded = bin_filtered.select(
     explode(sequence_udf(col("bin8_min"), col("bin8_max"))).alias("bin_val"),
-    F.lit(8).alias("bin_type"),
+    F.lit(8).cast(IntegerType()).alias("bin_type_bin"),
     "pi_cdbqatt"
 )
 
@@ -122,16 +123,16 @@ bin_exploded = bin6_exploded.unionByName(bin8_exploded)
 bin_exploded = bin_exploded.withColumn(
     "bin_val_str", F.col("bin_val").cast("string")
 )
-bin_exploded = bin_exploded.repartition(400, "bin_val_str", "bin_type")
+bin_exploded = bin_exploded.repartition(400, "bin_val_str", "bin_type_bin")
 bin_exploded.cache()
 
 # ------------------------------------------------------------
-# JOINTURE PAR EGALITE EXACTE
+# JOINTURE PAR EGALITE EXACTE — colonnes renommees, zero ambiguite
 # ------------------------------------------------------------
 result = retrait_agg.join(
     bin_exploded,
-    (retrait_agg.bin_clean == bin_exploded.bin_val_str) &
-    (retrait_agg.bin_type  == bin_exploded.bin_type),
+    (retrait_agg["bin_clean"] == bin_exploded["bin_val_str"]) &
+    (retrait_agg["bin_type"]  == bin_exploded["bin_type_bin"]),
     how="left"
 ).select(
     retrait_agg["mois_annee"],

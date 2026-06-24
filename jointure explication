@@ -2,7 +2,8 @@ import dataiku
 from dataiku import spark as dkuspark
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import LongType
+from pyspark.sql.types import LongType, ArrayType
+from pyspark.sql.functions import udf, col, explode
 from pyspark import SparkConf
 
 # ------------------------------------------------------------
@@ -35,6 +36,16 @@ spark = SparkSession.builder \
     .config(conf=config) \
     .enableHiveSupport() \
     .getOrCreate()
+
+# ------------------------------------------------------------
+# UDF — generation de sequence (remplace F.sequence)
+# ------------------------------------------------------------
+def make_sequence(start, end):
+    if start is None or end is None:
+        return []
+    return list(range(int(start), int(end) + 1))
+
+sequence_udf = udf(make_sequence, ArrayType(LongType()))
 
 # ------------------------------------------------------------
 # ENTREES DU FLOW — remplacez par les noms exacts de vos inputs
@@ -93,20 +104,16 @@ bin_filtered = bin_raw.filter(
 )
 
 # ------------------------------------------------------------
-# EXPLOSION DES PLAGES BIN6 ET BIN8
+# EXPLOSION DES PLAGES BIN6 ET BIN8 — via UDF
 # ------------------------------------------------------------
 bin6_exploded = bin_filtered.select(
-    F.explode(
-        F.sequence(F.col("bin6_min"), F.col("bin6_max"))
-    ).alias("bin_val"),
+    explode(sequence_udf(col("bin6_min"), col("bin6_max"))).alias("bin_val"),
     F.lit(6).alias("bin_type"),
     "pi_cdbqatt"
 )
 
 bin8_exploded = bin_filtered.select(
-    F.explode(
-        F.sequence(F.col("bin8_min"), F.col("bin8_max"))
-    ).alias("bin_val"),
+    explode(sequence_udf(col("bin8_min"), col("bin8_max"))).alias("bin_val"),
     F.lit(8).alias("bin_type"),
     "pi_cdbqatt"
 )

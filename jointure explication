@@ -38,26 +38,27 @@ spark = SparkSession.builder \
     .getOrCreate()
 
 # ------------------------------------------------------------
-# UDF — generation de sequence (remplace F.sequence)
+# UDF — generation de sequence
 # ------------------------------------------------------------
 def make_sequence(start, end):
     if start is None or end is None:
         return []
-    return list(range(int(start), int(end) + 1))
+    if end < start:
+        return []
+    return [int(x) for x in range(int(start), int(end) + 1)]
 
 sequence_udf = udf(make_sequence, ArrayType(LongType()))
 
 # ------------------------------------------------------------
-# ENTREES DU FLOW — remplacez par les noms exacts de vos inputs
+# ENTREES DU FLOW
 # ------------------------------------------------------------
 retrait_raw = dkuspark.get_dataframe(spark, dataiku.Dataset("ds_..."))
 bin_raw     = dkuspark.get_dataframe(spark, dataiku.Dataset("t_lbp_mon_bin8_h"))
 
-# Filtre periode 2025 + 2026, tout le parc
 retrait_raw = retrait_raw.filter(F.col("annee").isin(2025, 2026))
 
 # ------------------------------------------------------------
-# PREPARATION TABLE RETRAITS — detection BIN6/BIN8
+# PREPARATION TABLE RETRAITS
 # ------------------------------------------------------------
 retrait_df = retrait_raw.withColumn(
     "bin_clean",
@@ -76,15 +77,15 @@ retrait_df = retrait_raw.withColumn(
 retrait_agg = retrait_df.groupBy(
     "mois_annee", "num_automate", "bin_clean", "bin_type"
 ).agg(
-    F.count("*").alias("nb_retraits"),
-    F.sum("montant_ope").alias("montant_total")
+    F.count(F.lit(1)).cast(LongType()).alias("nb_retraits"),
+    F.sum(F.col("montant_ope").cast("double")).alias("montant_total")
 )
 
 retrait_agg = retrait_agg.repartition(400, "bin_clean", "bin_type")
 retrait_agg.cache()
 
 # ------------------------------------------------------------
-# PREPARATION TABLE BINs — banque d'attribution uniquement
+# PREPARATION TABLE BINs
 # ------------------------------------------------------------
 bin_filtered = bin_raw.filter(
     (F.col("pi_daeffet") < "2026-01-01") & (F.col("pi_dafin") > "2025-12-31")
@@ -98,14 +99,14 @@ bin_filtered = bin_raw.filter(
     "bin8_max", F.substring(F.col("pi_trmax"), 1, 8).cast(LongType())
 ).select(
     "bin6_min", "bin6_max", "bin8_min", "bin8_max",
-    "pi_cdbqatt"
+    F.col("pi_cdbqatt").cast("string").alias("pi_cdbqatt")
 ).filter(
     F.col("bin6_min").isNotNull() & F.col("bin6_max").isNotNull() &
     F.col("bin8_min").isNotNull() & F.col("bin8_max").isNotNull()
 )
 
 # ------------------------------------------------------------
-# EXPLOSION DES PLAGES BIN6 ET BIN8 — via UDF
+# EXPLOSION DES PLAGES BIN6 ET BIN8
 # ------------------------------------------------------------
 bin6_exploded = bin_filtered.select(
     explode(sequence_udf(col("bin6_min"), col("bin6_max"))).alias("bin_val"),
@@ -127,25 +128,38 @@ bin_exploded = bin_exploded.repartition(400, "bin_val_str", "bin_type_bin")
 bin_exploded.cache()
 
 # ------------------------------------------------------------
-# JOINTURE PAR EGALITE EXACTE — colonnes renommees, zero ambiguite
+# JOINTURE
 # ------------------------------------------------------------
-result = retrait_agg.join(
+joined = retrait_agg.join(
     bin_exploded,
     (retrait_agg["bin_clean"] == bin_exploded["bin_val_str"]) &
     (retrait_agg["bin_type"]  == bin_exploded["bin_type_bin"]),
     how="left"
-).select(
-    retrait_agg["mois_annee"],
-    retrait_agg["num_automate"],
-    retrait_agg["bin_clean"],
-    retrait_agg["bin_type"],
+)
+
+result = joined.select(
+    retrait_agg["mois_annee"].alias("mois_annee"),
+    retrait_agg["num_automate"].alias("num_automate"),
+    retrait_agg["bin_clean"].alias("bin_clean"),
+    retrait_agg["bin_type"].alias("bin_type"),
     bin_exploded["pi_cdbqatt"].alias("banque_attribution"),
-    retrait_agg["nb_retraits"],
-    retrait_agg["montant_total"]
+    retrait_agg["nb_retraits"].alias("nb_retraits"),
+    retrait_agg["montant_total"].alias("montant_total")
+)
+
+# Force un schema propre, sans metadonnees residuelles
+result = result.select(
+    F.col("mois_annee").cast("string"),
+    F.col("num_automate").cast("string"),
+    F.col("bin_clean").cast("string"),
+    F.col("bin_type").cast("int"),
+    F.col("banque_attribution").cast("string"),
+    F.col("nb_retraits").cast("long"),
+    F.col("montant_total").cast("double")
 )
 
 # ------------------------------------------------------------
-# SORTIE DU FLOW — remplacez par le nom exact de votre output
+# SORTIE DU FLOW — ecriture avec recreation forcee du schema
 # ------------------------------------------------------------
 output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE")
-dkuspark.write_with_schema(output_dataset, result)
+dkuspark.write_with_schema(output_dataset, result, dropAndCreate=True)

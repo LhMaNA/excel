@@ -1,0 +1,25 @@
+-- ============================================================================
+-- Recette HiveSQL — Agrégation parc GAB avant notebook Plotly
+-- À utiliser dans une recette SQL Dataiku, en amont du notebook
+--
+-- Objectif : réduire 70M+ lignes de retraits individuels à un résumé
+-- (num_automate, mois_annee, banque_attribution) -> quelques dizaines/centaines
+-- de milliers de lignes max, exploitable directement par pandas/Plotly.
+--
+-- ⚠️ Remplacez NOM_TABLE_SOURCE par le nom réel de votre dataset/table source.
+-- ============================================================================
+
+SELECT
+    num_automate,
+    mois_annee,
+    banque_attribution,
+    -- On garde le libellé via MAX (il est normalement constant pour un même code banque,
+    -- MAX évite d'avoir à le mettre dans le GROUP BY s'il varie en casse/espace)
+    MAX(lib_banque_attribution) AS lib_banque_attribution,
+    SUM(nb_retraits)            AS nb_retraits,
+    SUM(montant_total)          AS montant_total
+FROM NOM_TABLE_SOURCE
+GROUP BY
+    num_automate,
+    mois_annee,
+    banque_attribution

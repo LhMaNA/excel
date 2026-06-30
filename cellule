@@ -1,51 +1,18 @@
-# --- Résumé par type de porteur (2 lignes) ---
-agg_type = df.groupby('type_porteur', observed=True).agg(
-    nb_retraits    = ('nb_retraits',    'sum'),
-    montant_total = ('montant_total', 'sum')
-).reset_index()
+kpi_annuel_pivot = agg_annee.pivot(index='annee', columns='type_porteur', values='nb_retraits').fillna(0)
+kpi_annuel_pivot.columns = kpi_annuel_pivot.columns.astype(str)   # fix : colonnes categorical -> str
 
-# --- Résumé par banque (quelques dizaines de lignes max) ---
-agg_banque = df.groupby(['label_banque', 'type_porteur'], observed=True).agg(
-    nb_retraits    = ('nb_retraits',    'sum'),
-    montant_total = ('montant_total', 'sum')
-).reset_index()
-agg_banque['montant_moyen'] = agg_banque['montant_total'] / agg_banque['nb_retraits']
+kpi_annuel_pivot['total_retraits'] = kpi_annuel_pivot.get('Nos porteurs', 0) + kpi_annuel_pivot.get('Confrères', 0)
+kpi_annuel_pivot['pct_confreres']  = (kpi_annuel_pivot.get('Confrères', 0) / kpi_annuel_pivot['total_retraits'] * 100).round(1)
+kpi_annuel_pivot['nb_mois']        = nb_mois_par_an
+kpi_annuel_pivot['moy_mensuelle_confreres'] = (kpi_annuel_pivot.get('Confrères', 0) / kpi_annuel_pivot['nb_mois']).round(0)
 
-# --- Résumé par mois (24 lignes max sur 2 ans) ---
-agg_mois = df.groupby(['periode_tri', 'periode_label', 'type_porteur'], observed=True).agg(
-    nb_retraits    = ('nb_retraits',    'sum'),
-    montant_total = ('montant_total', 'sum')
-).reset_index().sort_values('periode_tri')
-ordre_periodes = agg_mois['periode_label'].drop_duplicates().tolist()
+print("=" * 70)
+for annee in sorted(kpi_annuel_pivot.index):
+    row = kpi_annuel_pivot.loc[annee]
+    print(f"  📅 {int(annee)} ({int(row['nb_mois'])} mois de données)")
+    print(f"      Total retraits      : {row['total_retraits']:,.0f}")
+    print(f"      Confrères           : {row.get('Confrères', 0):,.0f}  ({row['pct_confreres']:.1f}%)")
+    print(f"      Moy. mensuelle confrères : {row['moy_mensuelle_confreres']:,.0f} / mois")
+    print("-" * 70)
 
-# --- Résumé par GAB (quelques milliers de lignes max = nb de GAB du parc) ---
-agg_gab = df.groupby(['num_automate', 'type_porteur'], observed=True).agg(
-    nb_retraits=('nb_retraits', 'sum')
-).reset_index()
-
-gab_pivot = agg_gab.pivot(index='num_automate', columns='type_porteur', values='nb_retraits').fillna(0)
-gab_pivot.columns = gab_pivot.columns.astype(str)   # fix : colonnes categorical -> str
-gab_pivot = gab_pivot.reset_index()
-
-gab_pivot['total_retraits'] = gab_pivot.get('Nos porteurs', 0) + gab_pivot.get('Confrères', 0)
-gab_pivot['pct_confreres']  = (gab_pivot.get('Confrères', 0) / gab_pivot['total_retraits'] * 100).round(1)
-
-# --- Résumé annuel (2-3 lignes) ---
-agg_annee = df.groupby(['annee', 'type_porteur'], observed=True).agg(
-    nb_retraits    = ('nb_retraits',    'sum'),
-    montant_total = ('montant_total', 'sum')
-).reset_index()
-nb_mois_par_an = df.groupby('annee', observed=True)['periode_tri'].nunique()
-
-# --- Résumé saisonnalité mois x année (24 lignes max) ---
-agg_saison = df.groupby(['mois', 'annee'], observed=True).agg(
-    nb_retraits=('nb_retraits', 'sum')
-).reset_index()
-
-print("✅ Toutes les agrégations de référence sont calculées.")
-print(f"   agg_type   : {len(agg_type)} lignes")
-print(f"   agg_banque : {len(agg_banque)} lignes")
-print(f"   agg_mois   : {len(agg_mois)} lignes")
-print(f"   agg_gab    : {len(gab_pivot)} lignes (= nb de GAB)")
-print(f"   agg_annee  : {len(agg_annee)} lignes")
-print(f"   agg_saison : {len(agg_saison)} lignes")
+kpi_annuel_pivot

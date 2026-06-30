@@ -1,0 +1,40 @@
+def parse_mois_annee_unique(x):
+    """Parse un seul code mois_annee MMAAAA (5 ou 6 caractères) -> dict."""
+    x = str(x).strip()
+    if len(x) == 6:
+        mois, annee = int(x[:2]), int(x[2:])
+    elif len(x) == 5:
+        mois, annee = int(x[:1]), int(x[1:])
+    else:
+        return {'annee': None, 'mois': None, 'periode_tri': None, 'periode_label': None}
+
+    periode_tri   = f"{annee:04d}-{mois:02d}"
+    mois_labels   = ['', 'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
+                      'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
+    periode_label = f"{mois_labels[mois]} {annee}"
+    return {'annee': annee, 'mois': mois, 'periode_tri': periode_tri, 'periode_label': periode_label}
+
+# Parsing sur les valeurs DISTINCTES seulement (quelques dizaines max, pas des millions)
+mois_annee_uniques = df['mois_annee'].cat.categories if df['mois_annee'].dtype.name == 'category' else df['mois_annee'].unique()
+table_correspondance = pd.DataFrame({'mois_annee': mois_annee_uniques})
+table_correspondance = table_correspondance.join(
+    pd.DataFrame([parse_mois_annee_unique(x) for x in table_correspondance['mois_annee']])
+)
+
+# Vérification du parsing
+nb_echecs = table_correspondance['periode_tri'].isna().sum()
+if nb_echecs > 0:
+    print(f"⚠️ {nb_echecs} valeurs mois_annee n'ont pas pu être parsées — à vérifier !")
+    display(table_correspondance[table_correspondance['periode_tri'].isna()])
+else:
+    print(f"✅ {len(table_correspondance)} valeurs mois_annee distinctes, toutes parsées correctement.")
+
+# Jointure vectorisée (map) sur la colonne complète, pas de .apply() ligne par ligne
+mapping = table_correspondance.set_index('mois_annee')
+df['annee']         = df['mois_annee'].map(mapping['annee']).astype('Int64')
+df['mois']          = df['mois_annee'].map(mapping['mois']).astype('Int64')
+df['periode_tri']   = df['mois_annee'].map(mapping['periode_tri']).astype('category').cat.as_ordered()
+df['periode_label'] = df['mois_annee'].map(mapping['periode_label']).astype('category')
+
+print(f"\nPériode couverte : {df['periode_tri'].min()} → {df['periode_tri'].max()}")
+print(f"Années présentes : {sorted(df['annee'].dropna().unique())}")

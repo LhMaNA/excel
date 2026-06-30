@@ -1,21 +1,5 @@
-kpi_annuel_pivot = agg_annee.pivot(index='annee', columns='type_porteur', values='nb_retraits').fillna(0)
-kpi_annuel_pivot.columns = kpi_annuel_pivot.columns.astype(str)   # fix : colonnes categorical -> str
-kpi_annuel_pivot.index = kpi_annuel_pivot.index.astype(str)       # fix : index categorical -> str
-
-nb_mois_par_an.index = nb_mois_par_an.index.astype(str)           # fix : même chose côté Series source
-
-kpi_annuel_pivot['total_retraits'] = kpi_annuel_pivot.get('Nos porteurs', 0) + kpi_annuel_pivot.get('Confrères', 0)
-kpi_annuel_pivot['pct_confreres']  = (kpi_annuel_pivot.get('Confrères', 0) / kpi_annuel_pivot['total_retraits'] * 100).round(1)
-kpi_annuel_pivot['nb_mois']        = nb_mois_par_an
-kpi_annuel_pivot['moy_mensuelle_confreres'] = (kpi_annuel_pivot.get('Confrères', 0) / kpi_annuel_pivot['nb_mois']).round(0)
-
-print("=" * 70)
-for annee in sorted(kpi_annuel_pivot.index):
-    row = kpi_annuel_pivot.loc[annee]
-    print(f"  📅 {annee} ({int(row['nb_mois'])} mois de données)")
-    print(f"      Total retraits      : {row['total_retraits']:,.0f}")
-    print(f"      Confrères           : {row.get('Confrères', 0):,.0f}  ({row['pct_confreres']:.1f}%)")
-    print(f"      Moy. mensuelle confrères : {row['moy_mensuelle_confreres']:,.0f} / mois")
-    print("-" * 70)
-
-kpi_annuel_pivot
+# Désactive le categorical sur les colonnes utilisées comme index/columns de pivot,
+# pour éviter "cannot insert into a categorical index" partout dans le notebook.
+for col in ['type_porteur', 'label_banque', 'annee', 'periode_tri', 'periode_label', 'mois_annee']:
+    if col in df.columns and df[col].dtype.name == 'category':
+        df[col] = df[col].astype(str)

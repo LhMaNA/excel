@@ -1,18 +1,27 @@
-kpi_annuel_pivot = agg_annee.pivot(index='annee', columns='type_porteur', values='nb_retraits').fillna(0)
-kpi_annuel_pivot.columns = kpi_annuel_pivot.columns.astype(str)   # fix : colonnes categorical -> str
+# Pivot pour calculer le % confrères par mois directement (vectorisé, pas de .apply() sur groupby)
+pivot_mois = agg_mois.pivot_table(
+    index=['periode_tri', 'periode_label'],
+    columns='type_porteur',
+    values='nb_retraits',
+    fill_value=0
+).reset_index()
+pivot_mois.columns = pivot_mois.columns.astype(str)   # fix : colonnes categorical -> str
 
-kpi_annuel_pivot['total_retraits'] = kpi_annuel_pivot.get('Nos porteurs', 0) + kpi_annuel_pivot.get('Confrères', 0)
-kpi_annuel_pivot['pct_confreres']  = (kpi_annuel_pivot.get('Confrères', 0) / kpi_annuel_pivot['total_retraits'] * 100).round(1)
-kpi_annuel_pivot['nb_mois']        = nb_mois_par_an
-kpi_annuel_pivot['moy_mensuelle_confreres'] = (kpi_annuel_pivot.get('Confrères', 0) / kpi_annuel_pivot['nb_mois']).round(0)
+pivot_mois['annee'] = pivot_mois['periode_tri'].str[:4]
+pivot_mois['total'] = pivot_mois.get('Nos porteurs', 0) + pivot_mois.get('Confrères', 0)
+pivot_mois['pct_confreres'] = (pivot_mois.get('Confrères', 0) / pivot_mois['total'] * 100)
+pivot_mois = pivot_mois.sort_values('periode_tri')
 
-print("=" * 70)
-for annee in sorted(kpi_annuel_pivot.index):
-    row = kpi_annuel_pivot.loc[annee]
-    print(f"  📅 {int(annee)} ({int(row['nb_mois'])} mois de données)")
-    print(f"      Total retraits      : {row['total_retraits']:,.0f}")
-    print(f"      Confrères           : {row.get('Confrères', 0):,.0f}  ({row['pct_confreres']:.1f}%)")
-    print(f"      Moy. mensuelle confrères : {row['moy_mensuelle_confreres']:,.0f} / mois")
-    print("-" * 70)
-
-kpi_annuel_pivot
+fig_pct_evol = px.line(
+    pivot_mois,
+    x      = 'periode_label',
+    y      = 'pct_confreres',
+    color  = 'annee',
+    markers= True,
+    title  = '📈 Parc GAB — % de retraits confrères par mois (2025 vs 2026)',
+    labels = {'pct_confreres': '% retraits confrères', 'periode_label': 'Mois', 'annee': 'Année'},
+    category_orders = {'periode_label': ordre_periodes}
+)
+fig_pct_evol.update_xaxes(tickangle=-45)
+fig_pct_evol.update_yaxes(ticksuffix='%')
+fig_pct_evol.show()

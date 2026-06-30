@@ -1,30 +1,3 @@
-# Pivot pour calculer le % confrères par mois directement (vectorisé, pas de .apply() sur groupby)
-pivot_mois = agg_mois.pivot_table(
-    index=['periode_tri', 'periode_label'],
-    columns='type_porteur',
-    values='nb_retraits',
-    fill_value=0
-).reset_index()
-
-pivot_mois.columns = pivot_mois.columns.astype(str)        # fix : colonnes (type_porteur) categorical -> str
-pivot_mois['periode_tri']   = pivot_mois['periode_tri'].astype(str)    # fix : index categorical -> str
-pivot_mois['periode_label'] = pivot_mois['periode_label'].astype(str)  # fix : idem
-
-pivot_mois['annee'] = pivot_mois['periode_tri'].str[:4]
-pivot_mois['total'] = pivot_mois.get('Nos porteurs', 0) + pivot_mois.get('Confrères', 0)
-pivot_mois['pct_confreres'] = (pivot_mois.get('Confrères', 0) / pivot_mois['total'] * 100)
-pivot_mois = pivot_mois.sort_values('periode_tri')
-
-fig_pct_evol = px.line(
-    pivot_mois,
-    x      = 'periode_label',
-    y      = 'pct_confreres',
-    color  = 'annee',
-    markers= True,
-    title  = '📈 Parc GAB — % de retraits confrères par mois (2025 vs 2026)',
-    labels = {'pct_confreres': '% retraits confrères', 'periode_label': 'Mois', 'annee': 'Année'},
-    category_orders = {'periode_label': ordre_periodes}
-)
-fig_pct_evol.update_xaxes(tickangle=-45)
-fig_pct_evol.update_yaxes(ticksuffix='%')
-fig_pct_evol.show()
+print(pivot_mois.index.dtype if 'pivot_mois' in dir() else "pivot_mois pas encore créé")
+print(pivot_mois.dtypes)
+print(pivot_mois.columns.tolist())

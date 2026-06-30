@@ -1,40 +1,51 @@
-def parse_mois_annee_unique(x):
-    """Parse un seul code mois_annee MMAAAA (5 ou 6 caractères) -> dict."""
-    x = str(x).strip()
-    if len(x) == 6:
-        mois, annee = int(x[:2]), int(x[2:])
-    elif len(x) == 5:
-        mois, annee = int(x[:1]), int(x[1:])
-    else:
-        return {'annee': None, 'mois': None, 'periode_tri': None, 'periode_label': None}
+# --- Résumé par type de porteur (2 lignes) ---
+agg_type = df.groupby('type_porteur', observed=True).agg(
+    nb_retraits    = ('nb_retraits',    'sum'),
+    montant_total = ('montant_total', 'sum')
+).reset_index()
 
-    periode_tri   = f"{annee:04d}-{mois:02d}"
-    mois_labels   = ['', 'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
-                      'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc']
-    periode_label = f"{mois_labels[mois]} {annee}"
-    return {'annee': annee, 'mois': mois, 'periode_tri': periode_tri, 'periode_label': periode_label}
+# --- Résumé par banque (quelques dizaines de lignes max) ---
+agg_banque = df.groupby(['label_banque', 'type_porteur'], observed=True).agg(
+    nb_retraits    = ('nb_retraits',    'sum'),
+    montant_total = ('montant_total', 'sum')
+).reset_index()
+agg_banque['montant_moyen'] = agg_banque['montant_total'] / agg_banque['nb_retraits']
 
-# Parsing sur les valeurs DISTINCTES seulement (quelques dizaines max, pas des millions)
-mois_annee_uniques = df['mois_annee'].cat.categories if df['mois_annee'].dtype.name == 'category' else df['mois_annee'].unique()
-table_correspondance = pd.DataFrame({'mois_annee': mois_annee_uniques})
-table_correspondance = table_correspondance.join(
-    pd.DataFrame([parse_mois_annee_unique(x) for x in table_correspondance['mois_annee']])
-)
+# --- Résumé par mois (24 lignes max sur 2 ans) ---
+agg_mois = df.groupby(['periode_tri', 'periode_label', 'type_porteur'], observed=True).agg(
+    nb_retraits    = ('nb_retraits',    'sum'),
+    montant_total = ('montant_total', 'sum')
+).reset_index().sort_values('periode_tri')
+ordre_periodes = agg_mois['periode_label'].drop_duplicates().tolist()
 
-# Vérification du parsing
-nb_echecs = table_correspondance['periode_tri'].isna().sum()
-if nb_echecs > 0:
-    print(f"⚠️ {nb_echecs} valeurs mois_annee n'ont pas pu être parsées — à vérifier !")
-    display(table_correspondance[table_correspondance['periode_tri'].isna()])
-else:
-    print(f"✅ {len(table_correspondance)} valeurs mois_annee distinctes, toutes parsées correctement.")
+# --- Résumé par GAB (quelques milliers de lignes max = nb de GAB du parc) ---
+agg_gab = df.groupby(['num_automate', 'type_porteur'], observed=True).agg(
+    nb_retraits=('nb_retraits', 'sum')
+).reset_index()
 
-# Jointure vectorisée (map) sur la colonne complète, pas de .apply() ligne par ligne
-mapping = table_correspondance.set_index('mois_annee')
-df['annee']         = df['mois_annee'].map(mapping['annee']).astype('Int64')
-df['mois']          = df['mois_annee'].map(mapping['mois']).astype('Int64')
-df['periode_tri']   = df['mois_annee'].map(mapping['periode_tri']).astype('category').cat.as_ordered()
-df['periode_label'] = df['mois_annee'].map(mapping['periode_label']).astype('category')
+gab_pivot = agg_gab.pivot(index='num_automate', columns='type_porteur', values='nb_retraits').fillna(0)
+gab_pivot.columns = gab_pivot.columns.astype(str)   # fix : colonnes categorical -> str
+gab_pivot = gab_pivot.reset_index()
 
-print(f"\nPériode couverte : {df['periode_tri'].min()} → {df['periode_tri'].max()}")
-print(f"Années présentes : {sorted(df['annee'].dropna().unique())}")
+gab_pivot['total_retraits'] = gab_pivot.get('Nos porteurs', 0) + gab_pivot.get('Confrères', 0)
+gab_pivot['pct_confreres']  = (gab_pivot.get('Confrères', 0) / gab_pivot['total_retraits'] * 100).round(1)
+
+# --- Résumé annuel (2-3 lignes) ---
+agg_annee = df.groupby(['annee', 'type_porteur'], observed=True).agg(
+    nb_retraits    = ('nb_retraits',    'sum'),
+    montant_total = ('montant_total', 'sum')
+).reset_index()
+nb_mois_par_an = df.groupby('annee', observed=True)['periode_tri'].nunique()
+
+# --- Résumé saisonnalité mois x année (24 lignes max) ---
+agg_saison = df.groupby(['mois', 'annee'], observed=True).agg(
+    nb_retraits=('nb_retraits', 'sum')
+).reset_index()
+
+print("✅ Toutes les agrégations de référence sont calculées.")
+print(f"   agg_type   : {len(agg_type)} lignes")
+print(f"   agg_banque : {len(agg_banque)} lignes")
+print(f"   agg_mois   : {len(agg_mois)} lignes")
+print(f"   agg_gab    : {len(gab_pivot)} lignes (= nb de GAB)")
+print(f"   agg_annee  : {len(agg_annee)} lignes")
+print(f"   agg_saison : {len(agg_saison)} lignes")

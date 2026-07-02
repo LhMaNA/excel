@@ -3,12 +3,19 @@ from dataiku import spark as dkuspark
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, LongType
-from pyspark.sql.functions import udf
+from pyspark.sql.functions import udf, row_number
+from pyspark.sql.window import Window
 
+# ------------------------------------------------------------
+# SPARK SESSION
+# ------------------------------------------------------------
 spark = SparkSession.builder \
     .enableHiveSupport() \
     .getOrCreate()
 
+# ------------------------------------------------------------
+# UDF — generation de sequence
+# ------------------------------------------------------------
 def make_sequence(start, end):
     result = []
     if start is None or end is None:
@@ -26,11 +33,12 @@ def make_sequence(start, end):
 sequence_udf = udf(make_sequence, ArrayType(LongType()))
 
 # ------------------------------------------------------------
-# LECTURE
+# LECTURE DES TABLES — A ADAPTER avec vos noms exacts
 # ------------------------------------------------------------
 retrait = dkuspark.get_dataframe(spark, dataiku.Dataset("ds_..."))
 bins    = dkuspark.get_dataframe(spark, dataiku.Dataset("t_lbp_mon_bin8_h"))
 
+# Filtre annee
 retrait = retrait.filter("annee = 2025 OR annee = 2026")
 
 # ------------------------------------------------------------
@@ -40,14 +48,20 @@ retrait = retrait.withColumn("mois_annee", F.substring("date_operation", 3, 6))
 retrait = retrait.withColumn("pos78", F.substring("num_carte", 7, 2))
 retrait = retrait.withColumn(
     "bin_clean",
-    F.when(retrait.pos78 == "XX", F.substring("num_carte", 1, 6)).otherwise(F.substring("num_carte", 1, 8))
+    F.when(retrait.pos78 == "XX",
+           F.substring("num_carte", 1, 6))
+     .otherwise(F.substring("num_carte", 1, 8))
 )
 retrait = retrait.withColumn(
     "bin_type",
-    F.when(retrait.pos78 == "XX", F.lit(6)).otherwise(F.lit(8))
+    F.when(retrait.pos78 == "XX", F.lit(6))
+     .otherwise(F.lit(8))
 )
+retrait = retrait.drop("pos78")
 
-retrait_agg = retrait.groupBy("mois_annee", "num_automate", "bin_clean", "bin_type").agg(
+retrait_agg = retrait.groupBy(
+    "mois_annee", "num_automate", "bin_clean", "bin_type"
+).agg(
     F.count("*").alias("nb_retraits"),
     F.sum("montant_ope").alias("montant_total")
 )
@@ -66,31 +80,75 @@ bins = bins.withColumn("bin8_min", F.substring("pi_trmin", 1, 8).cast(LongType()
 bins = bins.withColumn("bin8_max", F.substring("pi_trmax", 1, 8).cast(LongType()))
 bins = bins.withColumn("banque_attribution", bins.pi_cdbqatt.cast("string"))
 
-bins_prep = bins.select("bin6_min", "bin6_max", "bin8_min", "bin8_max", "banque_attribution")
+bins_prep = bins.select(
+    "bin6_min", "bin6_max",
+    "bin8_min", "bin8_max",
+    "banque_attribution"
+)
 
 # ------------------------------------------------------------
-# EXPLOSION
+# DEDOUBLONNAGE BIN6 — une seule plage par combinaison min/max
+# ------------------------------------------------------------
+window_bin6 = Window.partitionBy("bin6_min", "bin6_max").orderBy("bin6_min")
+bins_prep = bins_prep.withColumn("rn6", row_number().over(window_bin6))
+bins_prep = bins_prep.filter(bins_prep.rn6 == 1)
+bins_prep = bins_prep.drop("rn6")
+
+# ------------------------------------------------------------
+# DEDOUBLONNAGE BIN8 — une seule plage par combinaison min/max
+# ------------------------------------------------------------
+window_bin8 = Window.partitionBy("bin8_min", "bin8_max").orderBy("bin8_min")
+bins_prep = bins_prep.withColumn("rn8", row_number().over(window_bin8))
+bins_prep = bins_prep.filter(bins_prep.rn8 == 1)
+bins_prep = bins_prep.drop("rn8")
+
+bins_prep.cache()
+
+# ------------------------------------------------------------
+# EXPLOSION DES PLAGES BIN6
 # ------------------------------------------------------------
 bin6_exp = bins_prep.select(
-    F.explode(sequence_udf(bins_prep.bin6_min, bins_prep.bin6_max)).alias("bin_val"),
+    F.explode(
+        sequence_udf(bins_prep.bin6_min, bins_prep.bin6_max)
+    ).alias("bin_val"),
     F.lit(6).alias("bin_type_b"),
     bins_prep.banque_attribution
 )
 
+# ------------------------------------------------------------
+# EXPLOSION DES PLAGES BIN8
+# ------------------------------------------------------------
 bin8_exp = bins_prep.select(
-    F.explode(sequence_udf(bins_prep.bin8_min, bins_prep.bin8_max)).alias("bin_val"),
+    F.explode(
+        sequence_udf(bins_prep.bin8_min, bins_prep.bin8_max)
+    ).alias("bin_val"),
     F.lit(8).alias("bin_type_b"),
     bins_prep.banque_attribution
 )
 
+# Union des deux
 bin_exp = bin6_exp.unionAll(bin8_exp)
 bin_exp = bin_exp.withColumn("bin_val_str", bin_exp.bin_val.cast("string"))
+
+# ------------------------------------------------------------
+# DEDOUBLONNAGE FINAL SUR LES VALEURS EXPLOSEES
+# Au cas ou deux plages differentes couvrent la meme valeur
+# On garde une seule banque par valeur de bin
+# ------------------------------------------------------------
+window_val = Window.partitionBy("bin_val_str", "bin_type_b").orderBy("bin_val_str")
+bin_exp = bin_exp.withColumn("rn_val", row_number().over(window_val))
+bin_exp = bin_exp.filter(bin_exp.rn_val == 1)
+bin_exp = bin_exp.drop("rn_val")
+
 bin_exp.cache()
 
 # ------------------------------------------------------------
-# JOINTURE — condition stockee dans une variable simple
+# JOINTURE — par egalite exacte, zero BETWEEN
 # ------------------------------------------------------------
-join_cond = (retrait_agg.bin_clean == bin_exp.bin_val_str) & (retrait_agg.bin_type == bin_exp.bin_type_b)
+join_cond = (
+    (retrait_agg.bin_clean == bin_exp.bin_val_str) &
+    (retrait_agg.bin_type  == bin_exp.bin_type_b)
+)
 
 result = retrait_agg.join(bin_exp, join_cond, "left").select(
     retrait_agg.mois_annee,
